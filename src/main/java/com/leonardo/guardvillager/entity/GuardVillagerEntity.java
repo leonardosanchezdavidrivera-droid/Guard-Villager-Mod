@@ -14,15 +14,18 @@ import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.monster.RangedAttackMob;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.animal.Animal;
-import net.minecraft.world.entity.projectile.Arrow;
+import net.minecraft.world.projectile.Arrow;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.BlockPos;
-import net.minecraft.nbt.CompoundTag;
+import java.util.EnumSet;
 import java.util.List;
 
 public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMob {
@@ -34,6 +37,11 @@ public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMo
     public GuardVillagerEntity(EntityType<? extends PathfinderMob> entityType, Level level) {
         super(entityType, level);
         this.spawnPosition = this.blockPosition();
+    }
+
+    // SOLUCIÓN TEXTURA: Usa el modelo del aldeano base para saltar el bug de carga por internet lento
+    public ResourceLocation getTextureLocation() {
+        return ResourceLocation.withDefaultNamespace("textures/entity/villager/villager.png");
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -48,27 +56,35 @@ public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMo
     protected void registerGoals() {
         this.goalSelector.addGoal(1, new FloatGoal(this));
         this.goalSelector.addGoal(2, new UsePotionEmergencyGoal(this));
-        
-        // MECÁNICA STICK WAR: LEGACY - Salto con Daño Masivo Crítico
         this.goalSelector.addGoal(3, new StickWarJumpAttackGoal(this));
         
-        this.goalSelector.addGoal(4, new MeleeAttackGoal(this, 1.4D, true));
+        this.goalSelector.addGoal(4, new MeleeAttackGoal(this, 1.4D, true) {
+            @Override
+            protected void checkAndPerformAttack(LivingEntity enemy, double distToEnemySqr) {
+                double d0 = this.getAttackReachSqr(enemy);
+                if (distToEnemySqr <= d0 && GuardVillagerEntity.this.attackCooldown <= 0) {
+                    GuardVillagerEntity.this.attackCooldown = 6;
+                    this.mob.doHurtTarget(enemy);
+                }
+            }
+        });
+
         this.goalSelector.addGoal(5, new RangedBowAttackGoal<>(this, 1.1D, 12, 45.0F));
         this.goalSelector.addGoal(6, new HealIronGolemGoal(this));
-        this.goalSelector.addGoal(7, new ReturnToPostGoal(this, 1.0D));
-        this.goalSelector.addGoal(8, new WaterAvoidingRandomStrollGoal(this, 1.0D));
+        this.goalSelector.addGoal(7, new LumberjackJobGoal(this, 1.0D));
+        this.goalSelector.addGoal(8, new HuntAnimalsGoal(this, 1.1D));
+        this.goalSelector.addGoal(9, new ReturnToPostGoal(this, 1.0D));
+        this.goalSelector.addGoal(10, new WaterAvoidingRandomStrollGoal(this, 1.0D));
 
         this.targetSelector.addGoal(1, new HurtByTargetGoal(this).setAlertOthers());
         this.targetSelector.addGoal(2, new NearestAttackableTargetGoal<>(this, LivingEntity.class, true, (entity) -> entity instanceof Monster));
     }
 
-    // SOLUCIÓN HUEVO DE INVOCACIÓN: Nace siempre equipado con armas listas (Evita el bug de manos vacías)
     @Override
     public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, MobSpawnType spawnType, SpawnGroupData spawnGroupData) {
         spawnGroupData = super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData);
         this.spawnPosition = this.blockPosition();
         
-        // 50% de probabilidad de aparecer con Espada/Escudo o Ballesta Francotirador
         if (this.random.nextBoolean()) {
             this.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.IRON_SWORD));
             this.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.SHIELD));
@@ -78,7 +94,6 @@ public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMo
         return spawnGroupData;
     }
 
-    // DISPARO AL TOQUE FRANCOTIRADOR PERFECTO
     @Override
     public void performRangedAttack(LivingEntity target, float distanceFactor) {
         ItemStack weapon = this.getItemInHand(InteractionHand.MAIN_HAND);
@@ -88,7 +103,7 @@ public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMo
         double d2 = target.getZ() - this.getZ();
         double d3 = Math.sqrt(d0 * d0 + d2 * d2);
         
-        arrow.shoot(d0, d1 + d3 * 0.18D, d2, 2.2F, 0.0F); // Velocidad de flecha aumentada para dar a bichos voladores
+        arrow.shoot(d0, d1 + d3 * 0.18D, d2, 2.2F, 0.0F);
         this.playSound(net.minecraft.sounds.SoundEvents.ARROW_SHOOT, 1.0F, 1.0F);
         this.level().addFreshEntity(arrow);
     }
@@ -99,52 +114,45 @@ public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMo
         if (this.attackCooldown > 0) this.attackCooldown--;
         if (this.jumpAttackCooldown > 0) this.jumpAttackCooldown--;
     }
+    // --- LÓGICA DE MECÁNICAS E INTELIGENCIAS AVANZADAS ---
 
-    // --- LÓGICA DEL ATAQUE CRÍTICO CON SALTO (STICK WAR LEGACY) ---
     private static class StickWarJumpAttackGoal extends Goal {
         private final GuardVillagerEntity guard;
-
-        public StickWarJumpAttackGoal(GuardVillagerEntity guard) {
-            this.guard = guard;
-        }
-
+        public StickWarJumpAttackGoal(GuardVillagerEntity guard) { this.guard = guard; }
         @Override
         public boolean canUse() {
             LivingEntity target = this.guard.getTarget();
             return target != null && target.isAlive() && this.guard.jumpAttackCooldown <= 0 && this.guard.distanceToSqr(target) > 9.0D && this.guard.distanceToSqr(target) < 36.0D && this.guard.onGround();
         }
-
         @Override
         public void start() {
             LivingEntity target = this.guard.getTarget();
             if (target != null) {
-                // Impulso físico de salto hacia el enemigo
                 double d0 = target.getX() - this.guard.getX();
                 double d1 = target.getZ() - this.guard.getZ();
                 double d2 = Math.sqrt(d0 * d0 + d1 * d1);
-                this.guard.setDeltaMovement(d0 / d2 * 0.8D, 0.5D, d1 / d2 * 0.8D); // Salto parabólico
-                this.guard.jumpAttackCooldown = 100; // Cooldown de 5 segundos para que no abuse del salto
+                this.guard.setDeltaMovement(d0 / d2 * 0.8D, 0.5D, d1 / d2 * 0.8D); // Impulso físico de salto
+                this.guard.jumpAttackCooldown = 100;
             }
         }
-
         @Override
         public void tick() {
             LivingEntity target = this.guard.getTarget();
             if (target != null && !this.guard.onGround() && this.guard.getBoundingBox().inflate(1.0D).intersects(target.getBoundingBox())) {
-                // DAÑO MASIVO CRÍTICO EN PLENO AIRE (Multiplica por 2 el daño base)
-                target.hurt(this.guard.damageSources().mobAttack(this.guard), 12.0F);
+                target.hurt(this.guard.damageSources().mobAttack(this.guard), 12.0F); // Daño crítico x2 masivo
                 this.guard.playSound(net.minecraft.sounds.SoundEvents.PLAYER_ATTACK_CRIT, 1.5F, 1.0F);
             }
         }
     }
 
-    // --- SUB-SISTEMAS EXTRAS ---
     private static class ReturnToPostGoal extends Goal {
         private final GuardVillagerEntity guard;
         private final double speed;
         public ReturnToPostGoal(GuardVillagerEntity guard, double speed) { this.guard = guard; this.speed = speed; }
-        @Override public boolean canUse() { return this.guard.getTarget() == null && this.guard.blockPosition().distSqr(this.guard.spawnPosition) > 256; }
-        @Override public void start() { this.guard.getNavigation().moveTo(this.guard.spawnPosition.getX(), this.guard.spawnPosition.getY(), this.guard.spawnPosition.getZ(), this.speed); }
+        @Override
+        public boolean canUse() { return this.guard.getTarget() == null && this.guard.blockPosition().distSqr(this.guard.spawnPosition) > 256; }
+        @Override
+        public void start() { this.guard.getNavigation().moveTo(this.guard.spawnPosition.getX(), this.guard.spawnPosition.getY(), this.guard.spawnPosition.getZ(), this.speed); }
     }
 
     private static class UsePotionEmergencyGoal extends Goal {
@@ -169,6 +177,43 @@ public class GuardVillagerEntity extends PathfinderMob implements RangedAttackMo
                 IronGolem golem = golems.get(0);
                 this.guard.getNavigation().moveTo(golem, 1.0D);
                 if (this.guard.distanceToSqr(golem) < 4.0D) { golem.setHealth(golem.getHealth() + 10.0F); this.guard.playSound(net.minecraft.sounds.SoundEvents.IRON_GOLEM_REPAIR, 1.0F, 1.0F); }
+            }
+        }
+    }
+
+    private static class LumberjackJobGoal extends Goal {
+        private final GuardVillagerEntity guard;
+        private final double speed;
+        private BlockPos targetTree;
+        public LumberjackJobGoal(GuardVillagerEntity guard, double speed) { this.guard = guard; this.speed = speed; this.setFlags(EnumSet.of(Goal.Flag.MOVE)); }
+        @Override public boolean canUse() {
+            if (this.guard.getTarget() != null) return false;
+            BlockPos currentPos = this.guard.blockPosition();
+            for (BlockPos pos : BlockPos.betweenClosed(currentPos.offset(-10, -3, -10), currentPos.offset(10, 3, 10))) {
+                BlockState state = this.guard.level().getBlockState(pos);
+                if (state.is(BlockTags.LOGS)) { this.targetTree = pos.immutable(); return true; }
+            }
+            return false;
+        }
+        @Override public void start() {
+            if (this.targetTree != null) {
+                this.guard.getNavigation().moveTo(this.targetTree.getX(), this.targetTree.getY(), this.targetTree.getZ(), this.speed);
+                if (this.guard.blockPosition().distSqr(this.targetTree) < 4.0D) { this.guard.level().destroyBlock(this.targetTree, false); }
+            }
+        }
+    }
+
+    private static class HuntAnimalsGoal extends Goal {
+        private final GuardVillagerEntity guard;
+        private final double speed;
+        public HuntAnimalsGoal(GuardVillagerEntity guard, double speed) { this.guard = guard; this.speed = speed; }
+        @Override public boolean canUse() { return this.guard.getTarget() == null && !this.guard.level().getEntitiesOfClass(Animal.class, this.guard.getBoundingBox().inflate(12.0D)).isEmpty(); }
+        @Override public void start() {
+            List<Animal> targets = this.guard.level().getEntitiesOfClass(Animal.class, this.guard.getBoundingBox().inflate(12.0D));
+            if (!targets.isEmpty()) {
+                Animal victim = targets.get(0);
+                this.guard.getNavigation().moveTo(victim, this.speed);
+                if (this.guard.distanceToSqr(victim) < 2.0D) { this.guard.doHurtTarget(victim); }
             }
         }
     }
